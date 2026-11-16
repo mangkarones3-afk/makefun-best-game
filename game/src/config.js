@@ -1,17 +1,18 @@
-// VOIDSTRIKE tuning: every number the simulation runs on lives here, so the rest of the
-// code names what it uses instead of scattering literals. The view is a fixed 1280x800
-// arena; the page scales the canvas to fit the window and the simulation never resizes.
+// WICKWARDEN tuning: every number the simulation runs on lives here, so the rest of
+// the code names what it uses instead of scattering literals. The view is a fixed
+// 1280x800 harbour; the page scales the canvas to fit the window and the simulation
+// never resizes.
 
-/** The arena's logical size, in pixels. */
+/** The harbour's logical size, in pixels. */
 export const VIEW = { width: 1280, height: 800 };
 
 /** The fixed simulation step, in seconds: the world advances in 1/60 s ticks. */
 export const STEP = 1 / 60;
 
 /** localStorage key for the best score. */
-export const BEST_KEY = 'voidstrike.best.v1';
+export const BEST_KEY = 'wickwarden.best.v1';
 
-/** The Warden (the player's ship): size, motion, gun and dash. */
+/** The Warden (the player's keeper): size, motion, gun and dash. */
 export const PLAYER = {
   radius: 14,
   speed: 268,
@@ -49,24 +50,72 @@ export const PACE = {
   heartHeal: 18,
 };
 
-/** The neon palette: one hue family per actor, so a frame reads at a glance. */
+/**
+ * The lantern system: light is the game's second resource and its core rule. The
+ * Warden's lantern burns oil; its light pool is where the Hollow can be hurt at full
+ * strength. In darkness a foe is a shadow — half-seen and barely scratched. Kills and
+ * embers feed the oil. The Great Lantern's beam and the four braziers are the other
+ * light sources; the Sovereign's later phases eclipse the flame and shrink the pool.
+ */
+export const LANTERN = {
+  oilMax: 100,
+  oilStart: 84,
+  oilDrain: 0.8,
+  oilPerShard: 5,
+  oilPerKill: 1.5,
+  radiusMin: 118,
+  radiusMax: 292,
+  towerRadius: 152,
+  brazierRadius: 118,
+  flareRadius: 132,
+  beamLength: 580,
+  beamHalfAngle: 0.21,
+  beamPeriod: 26,
+  beamDps: 30,
+  shadowDamageMult: 0.4,
+  tower: { x: 640, y: 118 },
+};
+
+/** The four harbour braziers: fixed pockets of light at the corners of the quay. */
+export const BRAZIERS = [
+  { x: 168, y: 176 },
+  { x: 1112, y: 176 },
+  { x: 168, y: 624 },
+  { x: 1112, y: 624 },
+];
+
+/** Place names painted on the quay floor: the harbour is a named world, not a box. */
+export const ZONES = [
+  { name: 'NORTH QUAY', x: 330, y: 120 },
+  { name: 'SOUTH PIER', x: 950, y: 120 },
+  { name: 'THE WRECK', x: 330, y: 706 },
+  { name: 'TIDE STEPS', x: 950, y: 706 },
+];
+
+/**
+ * The palette: one dominant grade — warm lantern amber against deep indigo night, so
+ * a frame reads at thumbnail size. Each actor keeps a hue family inside that grade.
+ */
 export const COLORS = {
-  void: '#05060e',
-  voidDeep: '#02030a',
-  grid: 'rgba(64, 90, 180, 0.13)',
-  player: '#59f7ff',
-  playerCore: '#eaffff',
-  bullet: '#8ff8ff',
-  shard: '#3ef2c8',
+  void: '#0a0714',
+  voidDeep: '#04030a',
+  grid: 'rgba(150, 118, 62, 0.14)',
+  player: '#ffc44d',
+  playerCore: '#fff3d6',
+  bullet: '#ffd166',
+  shard: '#ffb347',
   heart: '#ff5d8f',
   drifter: '#ff4d6d',
   mite: '#ff8fa3',
-  spitter: '#ffa53e',
+  spitter: '#ff8c42',
   bloom: '#69e58a',
-  lancer: '#ffe14d',
+  lancer: '#4dd8ff',
   sovereign: '#b06bff',
-  bolt: '#ff5df2',
-  text: '#dfe9ff',
-  dim: '#8fa3cc',
+  bolt: '#c44dff',
+  text: '#f5ead2',
+  dim: '#a89878',
   warn: '#ff3b3b',
+  lantern: '#ffb347',
+  flame: '#ff9d2e',
+  shadow: '#101527',
 };

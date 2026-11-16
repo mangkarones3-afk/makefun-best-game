@@ -1,10 +1,13 @@
-// Everything the player sees: the starfield and the arena, the swarm's shapes (one
-// silhouette per kind, told apart at a glance), the Warden, the HUD, and the screens
-// around the fight (title, draft, pause, game over). Drawing only: this module reads
-// the world's state and never changes it. Colours come from the palette in config.js,
-// so a frame's actors are colour-coded the same way everywhere.
+// Everything the player sees: the harbour of Gloamharbour at night — the quay, the
+// Great Lantern and its sweeping beam, the braziers, the Warden and the Hollow — and,
+// over it all, the darkness. The light pass is the game's signature: a darkness sheet
+// is punched with soft holes wherever light falls (the keeper's lantern, the tower,
+// the braziers, flares, the beam), so what the simulation calls "lit" is literally
+// what the player can see. Drawing only: this module reads the world's state and
+// never changes it. Colours come from the palette in config.js — one dominant grade,
+// warm lantern amber against deep indigo night.
 
-import { COLORS, PACE, VIEW } from './config.js';
+import { BRAZIERS, COLORS, LANTERN, PACE, VIEW, ZONES } from './config.js';
 import { SCREEN_DRAFT, SCREEN_MENU, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAYING } from './world.js';
 
 /** The draft cards' layout, shared with the shell so clicks land on the card drawn. */
@@ -51,13 +54,13 @@ function wrapLines(ctx, value, maxWidth) {
   return lines;
 }
 
-function bar(ctx, x, y, w, h, fraction, fill, back = 'rgba(120, 140, 190, 0.22)') {
+function bar(ctx, x, y, w, h, fraction, fill, back = 'rgba(120, 110, 90, 0.22)') {
   const clamped = Math.max(0, Math.min(1, fraction));
   ctx.fillStyle = back;
   ctx.fillRect(x, y, w, h);
   ctx.fillStyle = fill;
   ctx.fillRect(x, y, w * clamped, h);
-  ctx.strokeStyle = 'rgba(200, 220, 255, 0.35)';
+  ctx.strokeStyle = 'rgba(230, 210, 170, 0.35)';
   ctx.lineWidth = 1;
   ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
 }
@@ -83,7 +86,7 @@ export function createRenderer(canvas) {
   }
 
   const backgroundGradient = ctx.createLinearGradient(0, 0, 0, VIEW.height);
-  backgroundGradient.addColorStop(0, '#070a1c');
+  backgroundGradient.addColorStop(0, '#0d0918');
   backgroundGradient.addColorStop(0.55, COLORS.void);
   backgroundGradient.addColorStop(1, COLORS.voidDeep);
   const vignette = ctx.createRadialGradient(VIEW.width / 2, VIEW.height / 2, VIEW.height * 0.42, VIEW.width / 2, VIEW.height / 2, VIEW.height * 0.95);
@@ -115,6 +118,11 @@ export function createRenderer(canvas) {
       bctx.lineTo(VIEW.width, y);
     }
     bctx.stroke();
+    // The quay's painted place names are static too: they join the backdrop here
+    // instead of costing four large letter-spaced texts every frame.
+    for (const zone of ZONES) {
+      drawText(bctx, zone.name, zone.x, zone.y, { size: 27, weight: 800, color: COLORS.dim, align: 'center', alpha: 0.13, spacing: 7 });
+    }
     bctx.fillStyle = vignette;
     bctx.fillRect(0, 0, VIEW.width, VIEW.height);
   }
@@ -128,12 +136,72 @@ export function createRenderer(canvas) {
     const tctx = titlePlate.getContext('2d');
     tctx.font = `800 84px ${FONT}`;
     tctx.textAlign = 'center';
-    tctx.shadowColor = COLORS.player;
+    tctx.shadowColor = COLORS.flame;
     tctx.shadowBlur = 34;
     tctx.fillStyle = COLORS.text;
     if ('letterSpacing' in tctx) tctx.letterSpacing = '10px';
-    tctx.fillText('VOIDSTRIKE', 560, 96);
+    tctx.fillText('WICKWARDEN', 560, 96);
   }
+
+  // The darkness sheet: an offscreen canvas the light pass punches holes in each
+  // frame, then lays over the scene. Reused, never reallocated. It lives at half
+  // resolution — light pools are soft shapes, so the upscale costs nothing
+  // visually and the sheet's per-frame work drops fourfold. All sheet drawing
+  // happens in arena coordinates through a fixed half-scale transform.
+  const darkness = document.createElement('canvas');
+  darkness.width = VIEW.width / 2;
+  darkness.height = VIEW.height / 2;
+  const dctx = darkness.getContext('2d');
+  dctx.scale(0.5, 0.5);
+
+  // Light sprites, baked once. A software rasteriser fills a radial gradient over
+  // a 600-pixel disc far more slowly than it blits a pre-rendered sprite, and the
+  // light pass needs a dozen pools a frame — so every falloff the pass uses is
+  // baked into a sprite here and blitted, scaled, at draw time.
+  function bakeSprite(size, stops, inner = 0) {
+    const sprite = document.createElement('canvas');
+    sprite.width = size;
+    sprite.height = size;
+    const sctx = sprite.getContext('2d');
+    const gradient = sctx.createRadialGradient(size / 2, size / 2, inner, size / 2, size / 2, size / 2);
+    for (const [at, color] of stops) gradient.addColorStop(at, color);
+    sctx.fillStyle = gradient;
+    sctx.fillRect(0, 0, size, size);
+    return sprite;
+  }
+  const poolSprite = bakeSprite(256, [[0, 'rgba(0, 0, 0, 1)'], [0.55, 'rgba(0, 0, 0, 0.78)'], [1, 'rgba(0, 0, 0, 0)']], 15);
+  const warmSprite = bakeSprite(256, [[0, 'rgba(255, 150, 50, 1)'], [1, 'rgba(255, 150, 50, 0)']], 13);
+  const haloSprite = bakeSprite(256, [[0, 'rgba(176, 107, 255, 0.5)'], [0.5, 'rgba(176, 107, 255, 0.22)'], [1, 'rgba(176, 107, 255, 0)']]);
+
+  // The beam's wedge, baked along its length with feathered edges: drawn rotated
+  // around the tower point, once for the darkness sheet and once for the warmth.
+  function bakeBeam(fillStops) {
+    const sprite = document.createElement('canvas');
+    sprite.width = LANTERN.beamLength;
+    sprite.height = 280;
+    const sctx = sprite.getContext('2d');
+    const mid = sprite.height / 2;
+    const gradient = sctx.createLinearGradient(0, 0, LANTERN.beamLength, 0);
+    for (const [at, color] of fillStops) gradient.addColorStop(at, color);
+    sctx.fillStyle = gradient;
+    sctx.beginPath();
+    sctx.moveTo(0, mid);
+    sctx.arc(0, mid, LANTERN.beamLength, -LANTERN.beamHalfAngle, LANTERN.beamHalfAngle);
+    sctx.closePath();
+    sctx.fill();
+    // Feather the wedge's long edges so the beam melts into the dark.
+    sctx.globalCompositeOperation = 'destination-out';
+    const feather = sctx.createLinearGradient(0, 0, 0, sprite.height);
+    feather.addColorStop(0, 'rgba(0, 0, 0, 1)');
+    feather.addColorStop(0.18, 'rgba(0, 0, 0, 0)');
+    feather.addColorStop(0.82, 'rgba(0, 0, 0, 0)');
+    feather.addColorStop(1, 'rgba(0, 0, 0, 1)');
+    sctx.fillStyle = feather;
+    sctx.fillRect(0, 0, sprite.width, sprite.height);
+    return sprite;
+  }
+  const beamDarkSprite = bakeBeam([[0, 'rgba(0, 0, 0, 0.85)'], [1, 'rgba(0, 0, 0, 0.22)']]);
+  const beamWarmSprite = bakeBeam([[0, 'rgba(255, 170, 60, 0.55)'], [1, 'rgba(255, 170, 60, 0.08)']]);
 
   function drawBackground(world) {
     ctx.drawImage(backdrop, 0, 0);
@@ -143,16 +211,173 @@ export function createRenderer(canvas) {
       for (const star of layer.stars) {
         const x = (((star.x - px * layer.depth) % VIEW.width) + VIEW.width) % VIEW.width;
         const y = (((star.y - py * layer.depth) % VIEW.height) + VIEW.height) % VIEW.height;
-        const alpha = 0.35 + 0.3 * Math.sin(world.time * 1.7 + star.twinkle);
-        ctx.globalAlpha = Math.max(0.08, alpha);
-        ctx.fillStyle = '#cfe4ff';
+        const alpha = 0.22 + 0.2 * Math.sin(world.time * 1.7 + star.twinkle);
+        ctx.globalAlpha = Math.max(0.05, alpha);
+        ctx.fillStyle = '#ffe9c4';
         ctx.fillRect(x, y, layer.size, layer.size);
       }
     }
     ctx.globalAlpha = 1;
-    ctx.strokeStyle = 'rgba(89, 247, 255, 0.16)';
+    ctx.strokeStyle = 'rgba(255, 179, 71, 0.16)';
     ctx.lineWidth = 2;
     ctx.strokeRect(1, 1, VIEW.width - 2, VIEW.height - 2);
+  }
+
+  /** One piece of quay dressing: crate, barrel, mooring bollard or rope coil. */
+  function drawProp(prop) {
+    ctx.save();
+    ctx.translate(prop.x, prop.y);
+    ctx.rotate(prop.rot);
+    ctx.scale(prop.scale, prop.scale);
+    if (prop.kind === 'crate') {
+      ctx.fillStyle = '#3a2a1a';
+      ctx.fillRect(-16, -16, 32, 32);
+      ctx.strokeStyle = '#6b4e2e';
+      ctx.lineWidth = 2.4;
+      ctx.strokeRect(-16, -16, 32, 32);
+      ctx.beginPath();
+      ctx.moveTo(-16, -16);
+      ctx.lineTo(16, 16);
+      ctx.moveTo(16, -16);
+      ctx.lineTo(-16, 16);
+      ctx.stroke();
+    } else if (prop.kind === 'barrel') {
+      ctx.fillStyle = '#42301f';
+      ctx.beginPath();
+      ctx.arc(0, 0, 13.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#77572f';
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.arc(0, 0, 13.5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(0, 0, 7.5, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (prop.kind === 'bollard') {
+      ctx.fillStyle = '#1d1a26';
+      ctx.beginPath();
+      ctx.arc(0, 0, 7.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#454055';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = '#6d6785';
+      ctx.fillRect(-1.6, -1.6, 3.2, 3.2);
+    } else {
+      ctx.strokeStyle = '#5a4632';
+      ctx.lineWidth = 3.4;
+      ctx.beginPath();
+      ctx.arc(0, 0, 10.5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.arc(0, 0, 5.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /** A flame: a teardrop that leans and breathes with the harbour's own clock. */
+  function drawFlame(x, y, size, time, phase) {
+    const lean = Math.sin(time * 11 + phase) * size * 0.16;
+    const stretch = 1 + Math.sin(time * 13.7 + phase * 2) * 0.14;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.fillStyle = COLORS.flame;
+    ctx.beginPath();
+    ctx.moveTo(lean, -size * 1.5 * stretch);
+    ctx.quadraticCurveTo(size * 0.72, -size * 0.3, 0, size * 0.55);
+    ctx.quadraticCurveTo(-size * 0.72, -size * 0.3, lean, -size * 1.5 * stretch);
+    ctx.fill();
+    ctx.fillStyle = COLORS.playerCore;
+    ctx.beginPath();
+    ctx.moveTo(lean * 0.6, -size * 0.72 * stretch);
+    ctx.quadraticCurveTo(size * 0.34, -size * 0.16, 0, size * 0.34);
+    ctx.quadraticCurveTo(-size * 0.34, -size * 0.16, lean * 0.6, -size * 0.72 * stretch);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** The four harbour braziers: stone bowls with a living flame. */
+  function drawBraziers(world) {
+    for (const brazier of BRAZIERS) {
+      ctx.fillStyle = '#171221';
+      ctx.beginPath();
+      ctx.moveTo(brazier.x - 17, brazier.y + 4);
+      ctx.lineTo(brazier.x + 17, brazier.y + 4);
+      ctx.lineTo(brazier.x + 10, brazier.y + 17);
+      ctx.lineTo(brazier.x - 10, brazier.y + 17);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = '#3d3350';
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+      ctx.fillStyle = '#0d0a16';
+      ctx.fillRect(brazier.x - 3, brazier.y + 17, 6, 9);
+      drawFlame(brazier.x, brazier.y + 2, 10, world.time, brazier.x * 0.7);
+    }
+  }
+
+  /**
+   * The Great Lantern of Gloamharbour, standing on the north quay: the landmark
+   * every frame is composed around. Its lantern room sits exactly on the
+   * simulation's tower point, so the beam the rules burn with leaves the flame
+   * the player sees.
+   */
+  function drawTower(world) {
+    const { x, y } = LANTERN.tower;
+    // The pier it stands on.
+    ctx.fillStyle = '#161020';
+    ctx.beginPath();
+    ctx.ellipse(x, y + 84, 132, 17, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 179, 71, 0.14)';
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+    // The tapered stone body, from the pier up to the gallery.
+    ctx.fillStyle = '#251c33';
+    ctx.beginPath();
+    ctx.moveTo(x - 37, y + 80);
+    ctx.lineTo(x - 23, y + 22);
+    ctx.lineTo(x + 23, y + 22);
+    ctx.lineTo(x + 37, y + 80);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(10, 6, 18, 0.8)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x - 31, y + 52);
+    ctx.lineTo(x + 31, y + 52);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255, 179, 71, 0.20)';
+    ctx.fillRect(x + 14, y + 30, 5, 44);
+    // The gallery the keeper climbs to.
+    ctx.fillStyle = '#120d1e';
+    ctx.fillRect(x - 31, y + 13, 62, 9);
+    // The lantern room: iron frame, lit glass, the flame itself.
+    ctx.fillStyle = 'rgba(255, 157, 46, 0.28)';
+    ctx.fillRect(x - 18, y - 18, 36, 31);
+    ctx.strokeStyle = '#0b0813';
+    ctx.lineWidth = 3.4;
+    ctx.strokeRect(x - 18, y - 18, 36, 31);
+    ctx.beginPath();
+    ctx.moveTo(x, y - 18);
+    ctx.lineTo(x, y + 13);
+    ctx.stroke();
+    drawFlame(x, y + 6, 11, world.time, 1.7);
+    // The roof and its finial.
+    ctx.fillStyle = '#120d1e';
+    ctx.beginPath();
+    ctx.moveTo(x - 25, y - 18);
+    ctx.lineTo(x, y - 36);
+    ctx.lineTo(x + 25, y - 18);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = COLORS.flame;
+    ctx.beginPath();
+    ctx.arc(x, y - 38, 2.6, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   function drawSpawnMarkers(world) {
@@ -332,6 +557,9 @@ export function createRenderer(canvas) {
   }
 
   function drawSovereign(world, boss, color) {
+    // A cold halo first (the rim of the eclipse), then the turning rings.
+    const haloR = boss.radius * 2.3;
+    ctx.drawImage(haloSprite, -haloR, -haloR, haloR * 2, haloR * 2);
     const spin = world.time * 0.7;
     ctx.strokeStyle = color;
     ctx.lineWidth = 5;
@@ -361,60 +589,235 @@ export function createRenderer(canvas) {
     ctx.beginPath();
     ctx.arc(0, 0, boss.radius * 0.52, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = boss.state === 'phase3' ? COLORS.bolt : '#ffd7ff';
+    ctx.fillStyle = boss.state === 'phase3' ? COLORS.bolt : '#e9d5ff';
     ctx.beginPath();
     ctx.arc(Math.cos(look) * 7, Math.sin(look) * 7, boss.radius * 0.24, 0, Math.PI * 2);
     ctx.fill();
   }
 
+  /**
+   * The Warden: a cloaked keeper who carries the lantern toward the aim. The
+   * silhouette is a hooded wedge with the bright lamp at its front — readable at
+   * gameplay distance and unmistakably not one of the Hollow's shapes.
+   */
   function drawPlayer(world) {
     const player = world.player;
     if (!player.alive) return;
     if (player.iframes > 0 && player.dashTimer <= 0 && Math.sin(world.time * 34) > 0.2) {
-      // The blink of brief invulnerability: skip the hull every other flash.
-    } else {
-      ctx.save();
-      ctx.translate(player.x, player.y);
-      ctx.rotate(player.angle);
-      const thrust = Math.hypot(player.vx, player.vy) > 20;
-      if (thrust) {
-        const flame = 10 + Math.sin(world.time * 42) * 4 + (player.dashTimer > 0 ? 12 : 0);
-        ctx.fillStyle = 'rgba(89, 247, 255, 0.75)';
-        ctx.beginPath();
-        ctx.moveTo(-12, 5);
-        ctx.lineTo(-12 - flame, 0);
-        ctx.lineTo(-12, -5);
-        ctx.closePath();
-        ctx.fill();
-      }
-      ctx.fillStyle = COLORS.player;
+      // The blink of brief invulnerability: skip the keeper every other flash.
+      return;
+    }
+    ctx.save();
+    ctx.translate(player.x, player.y);
+    // The lantern's own glow, carried with the keeper: inside his light pool the
+    // sheet cannot cover it, so the hero is the brightest point in any frame.
+    ctx.globalAlpha = 0.55;
+    ctx.drawImage(warmSprite, -48, -48, 96, 96);
+    ctx.globalAlpha = 1;
+    ctx.rotate(player.angle);
+    if (player.dashTimer > 0) {
+      // The cloak streams behind a dash.
+      ctx.fillStyle = 'rgba(255, 196, 77, 0.30)';
       ctx.beginPath();
-      ctx.moveTo(19, 0);
-      ctx.lineTo(-8, 7.5);
-      ctx.lineTo(-13, 13);
-      ctx.lineTo(-10, 0);
-      ctx.lineTo(-13, -13);
-      ctx.lineTo(-8, -7.5);
+      ctx.moveTo(-8, 8);
+      ctx.lineTo(-30, 0);
+      ctx.lineTo(-8, -8);
       ctx.closePath();
       ctx.fill();
-      ctx.fillStyle = COLORS.playerCore;
-      ctx.beginPath();
-      ctx.arc(3, 0, 4.4, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
     }
-    // Aim reticle: a small ring on the mouse, so the twin-stick reads clearly.
+    // The cloak: a hooded wedge, dark umber trimmed with lantern amber.
+    ctx.fillStyle = '#2e1f0e';
+    ctx.strokeStyle = COLORS.player;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(15, 0);
+    ctx.lineTo(-6, 10.5);
+    ctx.lineTo(-13, 12);
+    ctx.lineTo(-9.5, 0);
+    ctx.lineTo(-13, -12);
+    ctx.lineTo(-6, -10.5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    // The hood.
+    ctx.fillStyle = '#17100a';
+    ctx.beginPath();
+    ctx.arc(3.5, 0, 6.4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 196, 77, 0.55)';
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    // The lantern, held out toward the aim: a caged flame, the brightest point
+    // on the keeper.
+    ctx.fillStyle = COLORS.playerCore;
+    ctx.beginPath();
+    ctx.arc(17.5, 6.5, 3.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = COLORS.flame;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(17.5, 6.5, 5.4, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 
   function drawReticle(input) {
     const aim = input.aim();
-    ctx.strokeStyle = 'rgba(89, 247, 255, 0.8)';
+    ctx.strokeStyle = 'rgba(255, 196, 77, 0.85)';
     ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.arc(aim.x, aim.y, 9, 0, Math.PI * 2);
     ctx.stroke();
-    ctx.fillStyle = 'rgba(89, 247, 255, 0.9)';
+    ctx.fillStyle = COLORS.playerCore;
     ctx.fillRect(aim.x - 1, aim.y - 1, 2, 2);
+  }
+
+  /**
+   * One pool of light on the darkness sheet: a radial falloff (the canvas cousin
+   * of a smoothstep edge) punched out of the dark. The tint pass then warms the
+   * same pool so lit ground feels lamplit, not merely less black.
+   */
+  function punchPool(x, y, radius, strength) {
+    dctx.globalAlpha = strength;
+    dctx.drawImage(poolSprite, x - radius, y - radius, radius * 2, radius * 2);
+    dctx.globalAlpha = 1;
+  }
+
+  function warmPool(x, y, radius, alpha) {
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(warmSprite, x - radius, y - radius, radius * 2, radius * 2);
+    ctx.globalAlpha = 1;
+  }
+
+  /** Blit a baked beam wedge, rotated into its current sweep, on either canvas. */
+  function drawBeamSprite(target, sprite, world, alpha) {
+    const { x, y } = LANTERN.tower;
+    target.save();
+    target.translate(x, y);
+    target.rotate(world.beamAngle());
+    target.globalAlpha = alpha;
+    target.drawImage(sprite, 0, -sprite.height / 2);
+    target.restore();
+    target.globalAlpha = 1;
+  }
+
+  /**
+   * The light pass. With the keeper in play, every pool the simulation knows is
+   * punched and warmed; on the menu only the harbour's own lights burn (the
+   * tower, the braziers, the sweeping beam) behind the title.
+   */
+  function drawLight(world, withKeeper) {
+    // The warm tint first, in plain source-over (the fast composite): lamplight
+    // is amber, not grey. The darkness sheet then covers everything except the
+    // pools, so the warmth survives exactly where the light falls.
+    warmPool(LANTERN.tower.x, LANTERN.tower.y, LANTERN.towerRadius, 0.19);
+    for (const brazier of BRAZIERS) warmPool(brazier.x, brazier.y, LANTERN.brazierRadius * 0.8, 0.15);
+    drawBeamSprite(ctx, beamWarmSprite, world, 0.14);
+    if (withKeeper && world.player) {
+      warmPool(world.player.x, world.player.y, world.lanternRadius(), 0.21);
+      for (const flare of world.flares) warmPool(flare.x, flare.y, LANTERN.flareRadius * 0.8, 0.16);
+    }
+
+    dctx.clearRect(0, 0, VIEW.width, VIEW.height);
+    dctx.globalCompositeOperation = 'source-over';
+    dctx.fillStyle = 'rgba(3, 3, 12, 0.88)';
+    dctx.fillRect(0, 0, VIEW.width, VIEW.height);
+    dctx.globalCompositeOperation = 'destination-out';
+    punchPool(LANTERN.tower.x, LANTERN.tower.y, LANTERN.towerRadius, 0.96);
+    for (const brazier of BRAZIERS) punchPool(brazier.x, brazier.y, LANTERN.brazierRadius, 0.92);
+    // The beam: the baked wedge blitted along its sweep, softer than the pools.
+    drawBeamSprite(dctx, beamDarkSprite, world, 0.95);
+    if (withKeeper && world.player) {
+      punchPool(world.player.x, world.player.y, world.lanternRadius(), 0.97);
+      for (const flare of world.flares) punchPool(flare.x, flare.y, LANTERN.flareRadius, 0.9);
+    }
+    dctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(darkness, 0, 0, VIEW.width, VIEW.height);
+  }
+
+  /** The Hollow's eyes: the one part of a shadowed foe the dark cannot hide. */
+  function drawShadowEyes(world) {
+    ctx.fillStyle = '#ff5d73';
+    for (const enemy of world.enemies) {
+      if (enemy.lit !== 0 || enemy.materialize > 0 || !enemy.active) continue;
+      const look = Math.atan2(world.player.y - enemy.y, world.player.x - enemy.x);
+      const px = Math.cos(look + Math.PI / 2);
+      const py = Math.sin(look + Math.PI / 2);
+      const fx = Math.cos(look);
+      const fy = Math.sin(look);
+      const spread = enemy.radius * 0.34;
+      const reach = enemy.radius * 0.3;
+      ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.arc(enemy.x + fx * reach + px * spread, enemy.y + fy * reach + py * spread, 1.9, 0, Math.PI * 2);
+      ctx.arc(enemy.x + fx * reach - px * spread, enemy.y + fy * reach - py * spread, 1.9, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /** The harbour chart, bottom-left: every light and every foe, at a glance. */
+  function drawMinimap(world) {
+    const w = 176;
+    const h = 110;
+    const x0 = 24;
+    const y0 = VIEW.height - h - 20;
+    const sx = w / VIEW.width;
+    const sy = h / VIEW.height;
+    ctx.fillStyle = 'rgba(6, 4, 14, 0.74)';
+    ctx.fillRect(x0, y0, w, h);
+    ctx.strokeStyle = 'rgba(255, 179, 71, 0.35)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x0 + 0.5, y0 + 0.5, w - 1, h - 1);
+    drawText(ctx, 'GLOAMHARBOUR', x0 + 7, y0 + 14, { size: 9, color: COLORS.dim, spacing: 1.6 });
+    // Lights first: tower diamond, brazier sparks, flares.
+    ctx.fillStyle = COLORS.flame;
+    ctx.save();
+    ctx.translate(x0 + LANTERN.tower.x * sx, y0 + LANTERN.tower.y * sy);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillRect(-3, -3, 6, 6);
+    ctx.restore();
+    for (const brazier of BRAZIERS) ctx.fillRect(x0 + brazier.x * sx - 1.4, y0 + brazier.y * sy - 1.4, 2.8, 2.8);
+    ctx.fillStyle = 'rgba(255, 179, 71, 0.55)';
+    for (const flare of world.flares) ctx.fillRect(x0 + flare.x * sx - 1.4, y0 + flare.y * sy - 1.4, 2.8, 2.8);
+    // Foes: full colour in the light, a whisper in the dark.
+    for (const enemy of world.enemies) {
+      if (!enemy.active || enemy.materialize > 0) continue;
+      ctx.globalAlpha = enemy.lit ? 1 : 0.35;
+      ctx.fillStyle = COLORS[enemy.kind];
+      const r = enemy.kind === 'sovereign' ? 4.6 : 2.6;
+      ctx.beginPath();
+      ctx.arc(x0 + enemy.x * sx, y0 + enemy.y * sy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    // The keeper: a bright heart with an aim tick.
+    const player = world.player;
+    if (player && player.alive) {
+      const mx = x0 + player.x * sx;
+      const my = y0 + player.y * sy;
+      ctx.strokeStyle = COLORS.player;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(mx, my);
+      ctx.lineTo(mx + Math.cos(player.angle) * 8, my + Math.sin(player.angle) * 8);
+      ctx.stroke();
+      ctx.fillStyle = COLORS.playerCore;
+      ctx.beginPath();
+      ctx.arc(mx, my, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  /** The kill feed: the fight's recent story, newest first, fading as it ages. */
+  function drawFeed(world) {
+    let y = 128;
+    for (const entry of world.feed) {
+      const alpha = Math.max(0, Math.min(1, entry.timer / 1.5));
+      drawText(ctx, entry.label, VIEW.width - 92, y, { size: 13, weight: 700, align: 'right', color: entry.color, alpha });
+      drawText(ctx, `+${entry.gained}`, VIEW.width - 26, y, { size: 13, weight: 700, align: 'right', color: COLORS.dim, alpha });
+      y += 19;
+    }
   }
 
   function drawHud(world, muted) {
@@ -423,13 +826,21 @@ export function createRenderer(canvas) {
     // Hull, top-left.
     drawText(ctx, 'HULL', 26, 34, { size: 12, color: COLORS.dim, spacing: 2 });
     const hpFraction = player.hp / stats.maxHp;
-    bar(ctx, 26, 42, 264, 15, hpFraction, hpFraction > 0.3 ? '#3ef2c8' : COLORS.warn);
+    bar(ctx, 26, 42, 264, 15, hpFraction, hpFraction > 0.3 ? COLORS.bloom : COLORS.warn);
     drawText(ctx, `${Math.ceil(player.hp)} / ${stats.maxHp}`, 300, 55, { size: 14, weight: 700 });
     // Dash, under the hull.
     drawText(ctx, 'DASH', 26, 78, { size: 12, color: COLORS.dim, spacing: 2 });
     const dashFraction = player.dashCdTimer > 0 ? 1 - player.dashCdTimer / stats.dashCooldown : 1;
-    bar(ctx, 74, 66, 120, 9, dashFraction, dashFraction >= 1 ? COLORS.player : 'rgba(89,247,255,0.4)');
+    bar(ctx, 74, 66, 120, 9, dashFraction, dashFraction >= 1 ? COLORS.player : 'rgba(255,196,77,0.4)');
     if (dashFraction >= 1) drawText(ctx, 'READY', 204, 76, { size: 11, color: COLORS.player });
+    // Oil, under the dash: the lantern's fuel, and with it the size of the light.
+    const oilFraction = world.oil / LANTERN.oilMax;
+    const guttering = oilFraction < 0.25;
+    drawText(ctx, 'OIL', 26, 102, { size: 12, color: guttering ? COLORS.warn : COLORS.dim, spacing: 2 });
+    ctx.globalAlpha = guttering ? 0.65 + 0.35 * Math.sin(world.time * 9) : 1;
+    bar(ctx, 74, 90, 216, 10, oilFraction, guttering ? COLORS.warn : COLORS.flame);
+    ctx.globalAlpha = 1;
+    drawText(ctx, `${Math.round(world.oil)}`, 300, 100, { size: 13, weight: 700, color: guttering ? COLORS.warn : COLORS.text });
     // Score and combo, top-right.
     drawText(ctx, formatScore(world.score), VIEW.width - 26, 46, { size: 30, weight: 800, align: 'right' });
     drawText(ctx, `BEST ${formatScore(Math.max(world.best, world.score))}`, VIEW.width - 26, 68, { size: 12, color: COLORS.dim, align: 'right' });
@@ -439,16 +850,17 @@ export function createRenderer(canvas) {
         size: 17,
         weight: 800,
         align: 'right',
-        color: mult >= 5 ? COLORS.lancer : COLORS.shard,
+        color: mult >= 5 ? COLORS.flame : COLORS.shard,
       });
       bar(ctx, VIEW.width - 146, 106, 120, 5, world.comboTimer / PACE.comboWindow, COLORS.shard);
     }
+    drawFeed(world);
     // Wave, top-centre; the boss takes the centre over with its own bar.
     if (world.boss) {
       const boss = world.boss;
-      drawText(ctx, 'THE HOLLOW SOVEREIGN', VIEW.width / 2, 36, { size: 14, weight: 800, color: COLORS.sovereign, align: 'center', spacing: 3 });
-      bar(ctx, VIEW.width / 2 - 260, 46, 520, 12, boss.hp / boss.maxHp, COLORS.sovereign);
-      drawText(ctx, boss.state === 'phase3' ? 'PHASE III — UNBOUND' : boss.state === 'phase2' ? 'PHASE II — THE CHOIR SINGS' : 'PHASE I', VIEW.width / 2, 76, {
+      drawText(ctx, 'THE HOLLOW SOVEREIGN', VIEW.width / 2, 30, { size: 14, weight: 800, color: COLORS.sovereign, align: 'center', spacing: 3 });
+      bar(ctx, VIEW.width / 2 - 260, 38, 520, 12, boss.hp / boss.maxHp, COLORS.sovereign);
+      drawText(ctx, boss.state === 'phase3' ? 'PHASE III — ECLIPSE' : boss.state === 'phase2' ? 'PHASE II — THE LIGHT FAILS' : 'PHASE I', VIEW.width / 2, 66, {
         size: 11,
         color: COLORS.dim,
         align: 'center',
@@ -456,6 +868,7 @@ export function createRenderer(canvas) {
     } else if (world.wave > 0) {
       drawText(ctx, `WAVE ${world.wave}`, VIEW.width / 2, 42, { size: 19, weight: 800, align: 'center', spacing: 3 });
     }
+    drawMinimap(world);
     drawText(ctx, muted ? 'M — SOUND OFF' : 'M — SOUND ON · ESC — PAUSE', VIEW.width - 26, VIEW.height - 18, { size: 11, color: COLORS.dim, align: 'right', alpha: 0.8 });
     if (hpFraction <= 0.3 && player.alive) {
       ctx.globalAlpha = 0.25 + 0.2 * Math.sin(world.time * 6);
@@ -475,37 +888,47 @@ export function createRenderer(canvas) {
     if (sub) drawText(ctx, sub, VIEW.width / 2, VIEW.height * 0.3 + 94, { size: 16, color: COLORS.dim, align: 'center', alpha });
   }
 
-  function drawMenu(world) {
-    ctx.fillStyle = 'rgba(3, 4, 12, 0.45)';
-    ctx.fillRect(0, 0, VIEW.width, VIEW.height);
-    // The Warden, large and slow-turning, above the title.
-    ctx.save();
-    ctx.translate(VIEW.width / 2, 196);
-    ctx.rotate(Math.sin(world.time * 0.6) * 0.3 - Math.PI / 2);
-    ctx.scale(2.6, 2.6);
-    ctx.fillStyle = COLORS.player;
+  /** A harbour lantern, drawn large: the menu's hero, a caged flame. */
+  function drawMenuLantern(world) {
+    const cx = VIEW.width / 2;
+    const cy = 196;
+    ctx.globalAlpha = 0.3;
+    ctx.drawImage(warmSprite, cx - 120, cy - 120, 240, 240);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = COLORS.player;
+    ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.moveTo(19, 0);
-    ctx.lineTo(-8, 7.5);
-    ctx.lineTo(-13, 13);
-    ctx.lineTo(-10, 0);
-    ctx.lineTo(-13, -13);
-    ctx.lineTo(-8, -7.5);
+    ctx.arc(cx, cy - 58, 13, Math.PI * 1.05, Math.PI * 1.95);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx - 30, cy - 46);
+    ctx.lineTo(cx + 30, cy - 46);
+    ctx.lineTo(cx + 24, cy + 44);
+    ctx.lineTo(cx - 24, cy + 44);
     ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = COLORS.playerCore;
+    ctx.stroke();
     ctx.beginPath();
-    ctx.arc(3, 0, 4.4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
+    ctx.moveTo(cx - 38, cy - 46);
+    ctx.lineTo(cx + 38, cy - 46);
+    ctx.moveTo(cx - 32, cy + 44);
+    ctx.lineTo(cx + 32, cy + 44);
+    ctx.stroke();
+    drawFlame(cx, cy + 16, 21, world.time, 0.4);
+  }
 
+  function drawMenu(world) {
+    ctx.fillStyle = 'rgba(3, 4, 12, 0.38)';
+    ctx.fillRect(0, 0, VIEW.width, VIEW.height);
+    drawMenuLantern(world);
     ctx.drawImage(titlePlate, VIEW.width / 2 - titlePlate.width / 2, 356 - 96);
-    drawText(ctx, 'HOLD THE GATE AGAINST THE HOLLOW', VIEW.width / 2, 398, { size: 17, color: COLORS.dim, align: 'center', spacing: 4 });
+    drawText(ctx, 'THE LAST LIGHTKEEPER OF GLOAMHARBOUR', VIEW.width / 2, 398, { size: 17, color: COLORS.dim, align: 'center', spacing: 4 });
+    drawText(ctx, 'IN DARKNESS THE HOLLOW BARELY BLEEDS. KEEP THE LIGHT FED, AND IT WILL KEEP YOU.', VIEW.width / 2, 428, { size: 14, color: COLORS.text, align: 'center' });
     const blink = Math.sin(world.time * 3.4) > -0.25;
-    if (blink) drawText(ctx, 'CLICK OR PRESS ENTER TO PLAY', VIEW.width / 2, 486, { size: 21, weight: 700, color: COLORS.shard, align: 'center' });
+    if (blink) drawText(ctx, 'CLICK OR PRESS ENTER TO TAKE THE WATCH', VIEW.width / 2, 492, { size: 21, weight: 700, color: COLORS.shard, align: 'center' });
     drawText(ctx, 'WASD / ARROWS — MOVE        MOUSE — AIM        HOLD CLICK — FIRE', VIEW.width / 2, 566, { size: 15, color: COLORS.text, align: 'center' });
     drawText(ctx, 'SHIFT / SPACE — DASH        SURVIVE THE WAVE, DRAFT AN UPGRADE, FACE THE SOVEREIGN EVERY 5TH WAVE', VIEW.width / 2, 594, { size: 15, color: COLORS.text, align: 'center' });
-    if (world.best > 0) drawText(ctx, `BEST SCORE ${formatScore(world.best)}`, VIEW.width / 2, 662, { size: 16, weight: 700, color: COLORS.lancer, align: 'center' });
+    drawText(ctx, 'KILLS AND EMBERS FEED THE OIL. A FOE IN DARKNESS TAKES ONLY A FRACTION OF EVERY HIT.', VIEW.width / 2, 622, { size: 15, color: COLORS.dim, align: 'center' });
+    if (world.best > 0) drawText(ctx, `BEST SCORE ${formatScore(world.best)}`, VIEW.width / 2, 668, { size: 16, weight: 700, color: COLORS.flame, align: 'center' });
   }
 
   /** A small geometric glyph per upgrade, drawn inside its draft card. */
@@ -590,6 +1013,40 @@ export function createRenderer(canvas) {
       ctx.beginPath();
       ctx.arc(cx - 8, cy, 8, 0, Math.PI * 2);
       ctx.stroke();
+    } else if (id === 'wide-wick') {
+      // The lantern's rings, widening: the pool grows.
+      for (const r of [6, 12.5, 19]) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.fillStyle = COLORS.flame;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (id === 'bright-burn') {
+      // A single tall flame.
+      ctx.fillStyle = COLORS.flame;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - 20);
+      ctx.quadraticCurveTo(cx + 11, cy - 2, cx, cy + 15);
+      ctx.quadraticCurveTo(cx - 11, cy - 2, cx, cy - 20);
+      ctx.fill();
+      ctx.fillStyle = COLORS.playerCore;
+      ctx.beginPath();
+      ctx.arc(cx, cy + 6, 3.6, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (id === 'flare-dash') {
+      // A dash chevron that leaves a flame behind it.
+      ctx.beginPath();
+      ctx.moveTo(cx - 2, cy - 13);
+      ctx.lineTo(cx + 16, cy);
+      ctx.lineTo(cx - 2, cy + 13);
+      ctx.stroke();
+      ctx.fillStyle = COLORS.flame;
+      ctx.beginPath();
+      ctx.arc(cx - 13, cy, 5.4, 0, Math.PI * 2);
+      ctx.fill();
     } else {
       // critical-matrix: a four-point star.
       ctx.beginPath();
@@ -606,14 +1063,14 @@ export function createRenderer(canvas) {
     ctx.fillStyle = 'rgba(3, 4, 12, 0.72)';
     ctx.fillRect(0, 0, VIEW.width, VIEW.height);
     drawText(ctx, `WAVE ${world.wave} HELD`, VIEW.width / 2, 196, { size: 40, weight: 800, align: 'center', spacing: 4 });
-    drawText(ctx, 'THE GATE BREATHES. CHOOSE ONE UPGRADE — CLICK A CARD OR PRESS 1, 2 OR 3.', VIEW.width / 2, 234, { size: 15, color: COLORS.dim, align: 'center' });
+    drawText(ctx, 'THE HARBOUR BREATHES. CHOOSE ONE UPGRADE — CLICK A CARD OR PRESS 1, 2 OR 3.', VIEW.width / 2, 234, { size: 15, color: COLORS.dim, align: 'center' });
     const aim = input.aim();
     world.draft.forEach((upgrade, i) => {
       const card = DRAFT_CARDS[i];
       const hovered = aim.x >= card.x && aim.x <= card.x + card.w && aim.y >= card.y && aim.y <= card.y + card.h;
-      ctx.fillStyle = hovered ? 'rgba(24, 38, 74, 0.95)' : 'rgba(12, 18, 38, 0.95)';
+      ctx.fillStyle = hovered ? 'rgba(46, 32, 14, 0.95)' : 'rgba(14, 11, 22, 0.95)';
       ctx.fillRect(card.x, card.y, card.w, card.h);
-      ctx.strokeStyle = hovered ? COLORS.player : 'rgba(120, 150, 220, 0.4)';
+      ctx.strokeStyle = hovered ? COLORS.player : 'rgba(168, 152, 120, 0.4)';
       ctx.lineWidth = hovered ? 2.6 : 1.4;
       ctx.strokeRect(card.x, card.y, card.w, card.h);
       drawUpgradeIcon(upgrade.id, card.x + card.w / 2, card.y + 52);
@@ -630,21 +1087,21 @@ export function createRenderer(canvas) {
   function drawOver(world) {
     ctx.fillStyle = 'rgba(5, 2, 8, 0.66)';
     ctx.fillRect(0, 0, VIEW.width, VIEW.height);
-    drawText(ctx, 'THE GATE FALLS', VIEW.width / 2, 218, { size: 54, weight: 800, align: 'center', spacing: 6, color: '#ff8095' });
-    drawText(ctx, `THE WARDEN HELD FOR ${world.finalWave} ${world.finalWave === 1 ? 'WAVE' : 'WAVES'}`, VIEW.width / 2, 262, { size: 16, color: COLORS.dim, align: 'center' });
+    drawText(ctx, 'THE LIGHT GOES OUT', VIEW.width / 2, 218, { size: 54, weight: 800, align: 'center', spacing: 6, color: '#ff8095' });
+    drawText(ctx, `THE WARDEN KEPT GLOAMHARBOUR LIT THROUGH ${world.finalWave} ${world.finalWave === 1 ? 'WAVE' : 'WAVES'}`, VIEW.width / 2, 262, { size: 16, color: COLORS.dim, align: 'center' });
     drawText(ctx, formatScore(world.finalScore), VIEW.width / 2, 348, { size: 64, weight: 800, align: 'center' });
     drawText(ctx, world.newBest ? 'A NEW BEST SCORE' : `BEST ${formatScore(world.best)}`, VIEW.width / 2, 384, {
       size: 15,
       weight: 700,
       align: 'center',
-      color: world.newBest ? COLORS.lancer : COLORS.dim,
+      color: world.newBest ? COLORS.flame : COLORS.dim,
     });
     drawText(ctx, `${world.kills} HOLLOW BROKEN`, VIEW.width / 2, 424, { size: 15, color: COLORS.text, align: 'center' });
     if (world.upgradesTaken.length > 0) {
       drawText(ctx, `UPGRADES CARRIED — ${world.upgradesTaken.join(' · ')}`, VIEW.width / 2, 458, { size: 13.5, color: COLORS.dim, align: 'center' });
     }
     const blink = Math.sin(world.time * 3.4) > -0.25;
-    if (blink) drawText(ctx, 'PRESS ENTER OR CLICK TO FIGHT AGAIN', VIEW.width / 2, 540, { size: 20, weight: 700, color: COLORS.shard, align: 'center' });
+    if (blink) drawText(ctx, 'PRESS ENTER OR CLICK TO RELIGHT', VIEW.width / 2, 540, { size: 20, weight: 700, color: COLORS.shard, align: 'center' });
   }
 
   function drawPaused() {
@@ -657,15 +1114,28 @@ export function createRenderer(canvas) {
   function draw(world, input, hud) {
     ctx.save();
     if (world.shake > 0.2) {
-      ctx.translate((Math.random() - 0.5) * world.shake, (Math.random() - 0.5) * world.shake);
+      // Summed sines under the decaying shake value, never a per-frame random
+      // buzz; driven by world.time, so the offset holds still through hit-stop
+      // instead of jittering inside the freeze.
+      const t = world.time * 31;
+      const ox = (Math.sin(t * 1.7) + Math.sin(t * 2.3) * 0.6) * world.shake * 0.42;
+      const oy = (Math.cos(t * 1.9) + Math.sin(t * 2.7) * 0.6) * world.shake * 0.42;
+      ctx.translate(ox, oy);
     }
     drawBackground(world);
-    if (world.screen !== SCREEN_MENU) {
+    for (const prop of world.props) drawProp(prop);
+    drawTower(world);
+    drawBraziers(world);
+    if (world.screen === SCREEN_MENU) {
+      drawLight(world, false);
+    } else {
       drawSpawnMarkers(world);
-      drawPickups(world);
       drawProjectiles(world);
       for (const enemy of world.enemies) drawEnemy(world, enemy);
       drawPlayer(world);
+      drawLight(world, true);
+      drawShadowEyes(world);
+      drawPickups(world);
       world.effects.draw(ctx);
     }
     ctx.restore();

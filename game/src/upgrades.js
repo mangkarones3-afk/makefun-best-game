@@ -1,7 +1,8 @@
 // The upgrade draft pool. Between waves the player picks one of three; each entry says
 // what it does in the draft card's words and applies itself to the run's stats object
-// (the world owns the stats; apply() mutates them). Ten upgrades, all stackable, so a
-// long run keeps making real choices instead of running out of pool.
+// (the world owns the stats; apply() mutates them). Thirteen upgrades — ten for the
+// keeper, three for the lantern itself — all stackable, so a long run keeps making
+// real choices instead of running out of pool.
 
 import { PLAYER } from './config.js';
 
@@ -87,6 +88,30 @@ export const UPGRADES = [
       stats.critChance += 0.15;
     },
   },
+  {
+    id: 'wide-wick',
+    name: 'Wide Wick',
+    blurb: 'The lantern burns wider: +18% radius on every pool of light you make.',
+    apply(stats) {
+      stats.lightMult *= 1.18;
+    },
+  },
+  {
+    id: 'bright-burn',
+    name: 'Bright Burn',
+    blurb: 'Hotter flame: foes standing in the light take +30% damage.',
+    apply(stats) {
+      stats.burnMult *= 1.3;
+    },
+  },
+  {
+    id: 'flare-dash',
+    name: 'Flare Dash',
+    blurb: 'Dashing drops a flare that burns as a pool of light for 4 seconds.',
+    apply(stats) {
+      stats.flareDash = true;
+    },
+  },
 ];
 
 /** The stats every run starts with, seeded from the PLAYER tuning; upgrades mutate them. */
@@ -102,6 +127,9 @@ export function baseStats() {
     magnet: 74,
     regen: 0,
     critChance: 0.05,
+    lightMult: 1,
+    burnMult: 1,
+    flareDash: false,
   };
 }
 

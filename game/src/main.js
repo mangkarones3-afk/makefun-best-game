@@ -2,8 +2,13 @@
 // 1/60 s steps (several in a slow frame, none in a fast one, a long stall dropped rather
 // than replayed); the renderer paints what is there. This shell owns the screen-level
 // keys (start, pause, draft picks, restart, mute), turns the world's sound events into
-// audio, keeps the best score in localStorage, and exposes window.__voidstrike so the
+// audio, keeps the best score in localStorage, and exposes window.__wickwarden so the
 // game can be driven and inspected from outside (screenshot staging, smoke tests).
+//
+// Hit-stop lives here too: the world only asks (world.hitStop, set by crits, big
+// kills, the draft opening, the death), and this shell freezes the simulation for
+// that many real seconds — the renderer keeps painting the frozen frame, shake
+// included, so the pause reads as weight, not as a stall.
 //
 // ?seed=N fixes the run's randomness. ?shot=title|action|boss|draft|over (with &seed=N)
 // stages that scene instead of running the loop, paints it and sets window.__shotReady.
@@ -147,7 +152,7 @@ function worldInput() {
   };
 }
 
-window.__voidstrike = {
+window.__wickwarden = {
   snapshot: () => world.snapshot(),
   startGame: () => startRun(),
   setWave: (wave) => {
@@ -181,12 +186,19 @@ if (shotName !== null) {
     let dt = (now - last) / 1000;
     last = now;
     if (dt > MAX_FRAME) dt = MAX_FRAME;
-    accumulator += dt;
     handleScreenInput();
     const stepInput = worldInput();
-    while (accumulator >= STEP) {
-      world.update(STEP, stepInput);
-      accumulator -= STEP;
+    if (world.hitStop > 0) {
+      // Frozen: burn the stop down in real time and let the accumulated frame
+      // time go — the world resumes from the pose it froze in.
+      world.hitStop = Math.max(0, world.hitStop - dt);
+      accumulator = 0;
+    } else {
+      accumulator += dt;
+      while (accumulator >= STEP) {
+        world.update(STEP, stepInput);
+        accumulator -= STEP;
+      }
     }
     playEvents();
     audio.setIntensity(world.boss ? 1 : 0);

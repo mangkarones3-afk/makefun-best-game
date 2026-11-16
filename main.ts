@@ -1,4 +1,4 @@
-// VOIDSTRIKE's hand-in program (Node 22, standard library only).
+// WICKWARDEN's hand-in program (Node 22, standard library only).
 //
 // The game itself is the static site in game/ beside this file: it opens in a desktop
 // browser and plays offline. This program delivers it the way the bounty asks: it
@@ -60,4 +60,4 @@ if (!Buffer.from(rebuilt).equals(readFileSync(join(out, 'dossier.json')))) {
   fail('the dossier rebuilt from the written output differs from the one on disk');
 }
 
-console.log(`VOIDSTRIKE handed in: game/ and ${shotNames.length} screenshots copied, dossier.json ${Buffer.byteLength(dossier)} bytes, deterministic across rebuilds.`);
+console.log(`WICKWARDEN handed in: game/ and ${shotNames.length} screenshots copied, dossier.json ${Buffer.byteLength(dossier)} bytes, deterministic across rebuilds.`);

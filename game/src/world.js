@@ -1,10 +1,13 @@
 // The simulation: the Warden, the Hollow swarm, bullets, pickups, waves, the draft
-// between them and the Sovereign who ends every fifth wave. Pure rules, no drawing and
-// no sound: the world pushes named events ('shoot', 'hit', 'explosion', ...) that the
-// shell turns into audio, and the renderer reads the state it leaves behind. Everything
-// random comes from the seeded generator handed in at creation, so a seed is a replay.
+// between them and the Sovereign who ends every fifth wave — and the light. The
+// lantern burns oil and throws a pool of light; a foe standing in darkness takes
+// only a fraction of any hit, so where the light falls is a rule, not a picture.
+// Pure rules, no drawing and no sound: the world pushes named events ('shoot',
+// 'hit', 'explosion', ...) that the shell turns into audio, and the renderer reads
+// the state it leaves behind. Everything random comes from the seeded generator
+// handed in at creation, so a seed is a replay.
 
-import { COLORS, FOES, PACE, PLAYER, VIEW } from './config.js';
+import { BRAZIERS, COLORS, FOES, LANTERN, PACE, PLAYER, VIEW } from './config.js';
 import { createParticles } from './particles.js';
 import { baseStats, rollUpgrades } from './upgrades.js';
 
@@ -15,6 +18,16 @@ export const SCREEN_PAUSED = 'paused';
 export const SCREEN_OVER = 'over';
 
 const BOSS_EVERY = 5;
+
+/** Display names for the kill feed, one per foe kind. */
+const FOE_NAMES = {
+  drifter: 'DRIFTER',
+  mite: 'MITE',
+  spitter: 'SPITTER',
+  bloom: 'BLOOM',
+  lancer: 'LANCER',
+  sovereign: 'THE SOVEREIGN',
+};
 
 function distance2(ax, ay, bx, by) {
   const dx = ax - bx;
@@ -86,7 +99,31 @@ export function createWorld(random) {
     finalScore: 0,
     finalWave: 0,
     newBest: false,
+    oil: LANTERN.oilStart,
+    feed: [],
+    flares: [],
+    hitStop: 0,
+    props: [],
   };
+
+  // The quay's dressing, scattered once from the run's own seed (procedural, so a
+  // seed is a harbour): crates, barrels, mooring bollards and rope coils that never
+  // crowd the keeper's spawn, the Great Lantern's pier, or a brazier. Dressing only —
+  // nothing here collides; the fight stays an open arena.
+  {
+    const kinds = ['crate', 'barrel', 'bollard', 'coil'];
+    let guard = 0;
+    while (world.props.length < 26 && guard < 500) {
+      guard += 1;
+      const x = random.range(56, VIEW.width - 56);
+      const y = random.range(56, VIEW.height - 56);
+      if (distance2(x, y, VIEW.width / 2, VIEW.height / 2) < 95 * 95) continue;
+      if (distance2(x, y, LANTERN.tower.x, LANTERN.tower.y) < 118 * 118) continue;
+      if (BRAZIERS.some((b) => distance2(x, y, b.x, b.y) < 58 * 58)) continue;
+      if (world.props.some((p) => distance2(x, y, p.x, p.y) < 54 * 54)) continue;
+      world.props.push({ kind: random.pick(kinds), x, y, rot: random.angle(), scale: random.range(0.8, 1.25) });
+    }
+  }
 
   function resetPlayer() {
     world.player = {
@@ -116,6 +153,61 @@ export function createWorld(random) {
   function emit(name) {
     world.events.push(name);
   }
+
+  /** The Great Lantern's beam direction: one slow sweep per beamPeriod seconds. */
+  function beamAngle() {
+    return (world.time / LANTERN.beamPeriod) * Math.PI * 2 - Math.PI / 2;
+  }
+  world.beamAngle = beamAngle;
+
+  /**
+   * The lantern pool's radius right now: it grows with the oil in the lamp and with
+   * the Wide Wick, and the Sovereign's eclipse phases (II and III) shrink it — the
+   * boss fight is a fight over how much of the harbour you can see.
+   */
+  function lanternRadius() {
+    const base = LANTERN.radiusMin + (LANTERN.radiusMax - LANTERN.radiusMin) * (world.oil / LANTERN.oilMax);
+    let eclipse = 1;
+    if (world.boss) {
+      if (world.boss.state === 'phase3') eclipse = 0.6;
+      else if (world.boss.state === 'phase2') eclipse = 0.78;
+    }
+    return base * world.stats.lightMult * eclipse;
+  }
+  world.lanternRadius = lanternRadius;
+
+  /** True when (x, y) stands inside the Great Lantern's rotating beam wedge. */
+  function inBeam(x, y) {
+    const dx = x - LANTERN.tower.x;
+    const dy = y - LANTERN.tower.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > LANTERN.beamLength || dist < 26) return false;
+    let diff = Math.atan2(dy, dx) - beamAngle();
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    return Math.abs(diff) < LANTERN.beamHalfAngle;
+  }
+  world.inBeam = inBeam;
+
+  /**
+   * Is this point lit? Light pools: the keeper's lantern, the Great Lantern's pier,
+   * the four braziers, any burning flare, and the beam. A foe outside every pool is
+   * shadowed: hurtEnemy scratches it and the renderer barely shows it.
+   */
+  function lightAt(x, y) {
+    const player = world.player;
+    const radius = lanternRadius();
+    if (distance2(x, y, player.x, player.y) < radius * radius) return 1;
+    if (distance2(x, y, LANTERN.tower.x, LANTERN.tower.y) < LANTERN.towerRadius * LANTERN.towerRadius) return 1;
+    for (const brazier of BRAZIERS) {
+      if (distance2(x, y, brazier.x, brazier.y) < LANTERN.brazierRadius * LANTERN.brazierRadius) return 1;
+    }
+    for (const flare of world.flares) {
+      if (distance2(x, y, flare.x, flare.y) < LANTERN.flareRadius * LANTERN.flareRadius) return 1;
+    }
+    return inBeam(x, y) ? 1 : 0;
+  }
+  world.lightAt = lightAt;
 
   function spawnPoint() {
     const margin = 36;
@@ -170,6 +262,7 @@ export function createWorld(random) {
       chargeAngle: 0,
       chargeTimer: 0,
       materialize: 0.25,
+      lit: 1,
     };
   }
 
@@ -184,12 +277,12 @@ export function createWorld(random) {
     world.spawnTimer = 0.4;
     world.trickleTimer = 3;
     if (wave % BOSS_EVERY === 0) {
-      world.banner = { title: 'THE HOLLOW SOVEREIGN', sub: 'End it, Warden.', timer: 2.4 };
+      world.banner = { title: 'THE HOLLOW SOVEREIGN', sub: 'It comes to snuff the light.', timer: 2.4 };
       world.spawning.push({ kind: 'sovereign', x: VIEW.width / 2, y: 170, timer: 1.2 });
       emit('boss');
     } else {
       world.spawnQueue = waveComposition(wave, random);
-      world.banner = { title: `WAVE ${wave}`, sub: wave === 1 ? 'Hold the gate.' : '', timer: 1.8 };
+      world.banner = { title: `WAVE ${wave}`, sub: wave === 1 ? 'Keep the lantern burning.' : '', timer: 1.8 };
     }
   }
   world.startWave = startWave;
@@ -211,6 +304,10 @@ export function createWorld(random) {
     world.boss = null;
     world.shake = 0;
     world.newBest = false;
+    world.oil = LANTERN.oilStart;
+    world.feed = [];
+    world.flares = [];
+    world.hitStop = 0;
     resetPlayer();
     world.screen = SCREEN_PLAYING;
     startWave(1);
@@ -220,6 +317,7 @@ export function createWorld(random) {
   function openDraft() {
     world.draft = rollUpgrades(random);
     world.screen = SCREEN_DRAFT;
+    world.hitStop = Math.max(world.hitStop, 0.06);
     emit('draft');
   }
 
@@ -243,6 +341,7 @@ export function createWorld(random) {
     world.newBest = world.score > world.best;
     if (world.newBest) world.best = world.score;
     world.shake = 16;
+    world.hitStop = Math.max(world.hitStop, 0.15);
     effects.burst(world.player.x, world.player.y, COLORS.player, 70, 340, 4, 0.9);
     effects.burst(world.player.x, world.player.y, COLORS.bullet, 40, 220, 3, 0.7);
     emit('explosion-big');
@@ -294,10 +393,17 @@ export function createWorld(random) {
     world.comboTimer = PACE.comboWindow;
     const gained = enemy.score * comboMult();
     world.score += gained;
+    // A kill feeds the lamp and the feed: the HUD's story of the fight so far.
+    world.oil = Math.min(LANTERN.oilMax, world.oil + LANTERN.oilPerKill);
+    world.feed.unshift({ label: `${FOE_NAMES[enemy.kind]} DOWN`, color: COLORS[enemy.kind], gained, timer: 3.6 });
+    if (world.feed.length > 5) world.feed.length = 5;
+    world.shake = Math.max(world.shake, enemy.kind === 'bloom' ? 6 : 3);
+    if (enemy.kind === 'bloom') world.hitStop = Math.max(world.hitStop, 0.05);
     effects.text(enemy.x, enemy.y - enemy.radius, `+${gained}`, COLORS.shard, enemy.kind === 'sovereign' ? 26 : 14);
     if (enemy.kind === 'sovereign') {
       world.boss = null;
       world.shake = 18;
+      world.hitStop = Math.max(world.hitStop, 0.13);
       effects.burst(enemy.x, enemy.y, COLORS.sovereign, 90, 380, 4, 1);
       effects.burst(enemy.x, enemy.y, COLORS.bolt, 50, 260, 3, 0.8);
       emit('explosion-big');
@@ -316,10 +422,25 @@ export function createWorld(random) {
     dropPickups(enemy.x, enemy.y, enemy.kind === 'bloom');
   }
 
-  function hurtEnemy(enemy, damage, crit) {
-    enemy.hp -= damage;
+  /**
+   * One hit landing. The light rule is applied here: a lit foe takes the hit scaled
+   * by Bright Burn, a shadowed foe only a fraction of it. A hit also knocks the foe
+   * a step along the bullet's line (never the Sovereign) and a crit freezes the
+   * world for a breath — the shell owns the freeze, this only asks for it.
+   */
+  function hurtEnemy(enemy, damage, crit, dirX = 0, dirY = 0) {
+    const lit = enemy.lit || lightAt(enemy.x, enemy.y);
+    const dealt = damage * (lit ? world.stats.burnMult : LANTERN.shadowDamageMult);
+    enemy.hp -= dealt;
     enemy.flash = 0.09;
-    if (crit) effects.text(enemy.x, enemy.y - enemy.radius - 6, `${Math.round(damage)}`, COLORS.lancer, 17);
+    if (enemy.kind !== 'sovereign' && (dirX !== 0 || dirY !== 0)) {
+      enemy.x += dirX * 5;
+      enemy.y += dirY * 5;
+    }
+    if (crit) {
+      effects.text(enemy.x, enemy.y - enemy.radius - 6, `${Math.round(dealt)}`, COLORS.lancer, 17);
+      world.hitStop = Math.max(world.hitStop, 0.03);
+    }
     effects.burst(enemy.x, enemy.y, COLORS[enemy.kind], 3, 150, 2, 0.3);
     emit('hit');
     if (enemy.hp <= 0) killEnemy(enemy);
@@ -362,6 +483,7 @@ export function createWorld(random) {
       player.dashTimer = PLAYER.dashTime;
       player.dashCdTimer = stats.dashCooldown;
       player.iframes = Math.max(player.iframes, PLAYER.dashTime + 0.05);
+      if (stats.flareDash) world.flares.push({ x: player.x, y: player.y, timer: 4 });
       emit('dash');
     }
 
@@ -419,6 +541,17 @@ export function createWorld(random) {
     if (enemy.materialize > 0) {
       enemy.materialize -= dt;
       return;
+    }
+    // Where does this foe stand — in the light, or in the dark? The beam also
+    // burns: a foe caught in the Great Lantern's sweep takes damage over time.
+    enemy.lit = lightAt(enemy.x, enemy.y);
+    if (inBeam(enemy.x, enemy.y)) {
+      enemy.hp -= LANTERN.beamDps * dt;
+      enemy.flash = Math.max(enemy.flash, 0.03);
+      if (enemy.hp <= 0) {
+        killEnemy(enemy);
+        return;
+      }
     }
     enemy.stateTime += dt;
     const dx = player.x - enemy.x;
@@ -589,7 +722,8 @@ export function createWorld(random) {
         if (!enemy.active || enemy.materialize > 0) continue;
         const reach = enemy.radius + bullet.radius;
         if (distance2(bullet.x, bullet.y, enemy.x, enemy.y) < reach * reach) {
-          hurtEnemy(enemy, bullet.crit ? bullet.damage * 2 : bullet.damage, bullet.crit);
+          const speed = Math.hypot(bullet.vx, bullet.vy) || 1;
+          hurtEnemy(enemy, bullet.crit ? bullet.damage * 2 : bullet.damage, bullet.crit, bullet.vx / speed, bullet.vy / speed);
           if (bullet.pierce > 0) {
             bullet.pierce -= 1;
           } else {
@@ -676,6 +810,7 @@ export function createWorld(random) {
           pickup.active = false;
           if (pickup.kind === 'shard') {
             world.score += PACE.shardScore;
+            world.oil = Math.min(LANTERN.oilMax, world.oil + LANTERN.oilPerShard);
             effects.text(player.x, player.y - 24, `+${PACE.shardScore}`, COLORS.shard, 12);
           } else {
             player.hp = Math.min(world.stats.maxHp, player.hp + PACE.heartHeal);
@@ -700,6 +835,12 @@ export function createWorld(random) {
     if (world.screen !== SCREEN_PLAYING) return;
 
     world.playTime += dt;
+    // The lamp drinks oil as it burns; kills and embers are how it is fed.
+    world.oil = Math.max(0, world.oil - LANTERN.oilDrain * dt);
+    for (const flare of world.flares) flare.timer -= dt;
+    world.flares = world.flares.filter((flare) => flare.timer > 0);
+    for (const entry of world.feed) entry.timer -= dt;
+    world.feed = world.feed.filter((entry) => entry.timer > 0);
     if (world.comboTimer > 0) {
       world.comboTimer -= dt;
       if (world.comboTimer <= 0) world.combo = 0;
@@ -745,6 +886,12 @@ export function createWorld(random) {
       kills: world.kills,
       particles: effects.count(),
       playTime: Math.round(world.playTime * 10) / 10,
+      oil: Math.round(world.oil),
+      lightRadius: Math.round(lanternRadius()),
+      litFoes: world.enemies.filter((enemy) => enemy.lit).length,
+      feed: world.feed.length,
+      flares: world.flares.length,
+      props: world.props.length,
     };
   }
   world.snapshot = snapshot;
